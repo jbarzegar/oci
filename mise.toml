@@ -1,0 +1,6 @@
+[tools]
+go = "1.26.3"
+
+[tasks.dev]
+description = "Run application in dev mode"
+run = "go run main.go"
