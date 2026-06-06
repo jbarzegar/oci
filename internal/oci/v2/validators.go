@@ -23,7 +23,7 @@ func ValidateManifestName(name string) bool {
 
 func ValidateReference(ref string) bool {
 	refPattern := regexp.MustCompile(
-		`[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`,
+		`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`,
 	)
 
 	return refPattern.MatchString(ref)

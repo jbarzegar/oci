@@ -1,6 +1,7 @@
 package ociv2_test
 
 import (
+	"strings"
 	"testing"
 
 	ociv2 "github.com/jbarzegar/oci/internal/oci/v2"
@@ -46,9 +47,38 @@ func TestValidateManifestNameInvalid(t *testing.T) {
 	}
 }
 
-// Validate
-// func TestValidateReference(t *testing.T) {
-// 	valid := []string{
-// 		"v1.0.0",
-// 	}
-// }
+func TestValidateReference(t *testing.T) {
+	valid := []string{
+		"v1.0.0",
+		"0.0.0",
+		"nginx",
+		"123image",
+		"_private",
+		"my.image",
+		"a-b_c.d",
+		strings.Repeat("a", 128),
+	}
+
+	for _, v := range valid {
+		result := ociv2.ValidateReference(v)
+		assert.Equal(t, true, result, v)
+	}
+}
+
+func TestInvalidReference(t *testing.T) {
+	invalid := []string{
+		"",                        // (Empty string - minimum length 1)
+		"-start",                  // (Starts with hyphen)
+		".start",                  // (Starts with dot)
+		"my/image",                // (Slash / is not in allowed character set for this regex)
+		"my image",                // (Space not allowed)
+		"registry/repo/image:tag", // (Contains colon and slash)
+		"my@name",                 // (Ampersand or special chars like @ not allowed)
+		strings.Repeat("a", 129),  // (String exceeds 128 characters)
+	}
+
+	for _, v := range invalid {
+		result := ociv2.ValidateReference(v)
+		assert.Equal(t, false, result, v)
+	}
+}
