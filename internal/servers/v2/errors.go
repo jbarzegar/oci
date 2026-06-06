@@ -2,26 +2,11 @@ package serverv2
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 )
-
-type errorCode string
-
-const (
-	ErrManifestBlobUnknown errorCode = "MANIFEST_BLOB_UNKNOWN"
-)
-
-// func formatError(code errorCode, message string, detail any) error {
-// 	return nil
-// }
-
-func errEndpointNotImplemented(c fiber.Ctx) error {
-	return c.
-		Status(fiber.ErrNotImplemented.Code).
-		SendString("Endpoint not yet implemented")
-
-}
 
 type ServerErrCode string
 
@@ -40,41 +25,69 @@ const (
 	ERR_DENIED                ServerErrCode = "DENIED"
 	ERR_UNSUPPORTED           ServerErrCode = "UNSUPPORTED"
 	ERR_TOOMANYREQUESTS       ServerErrCode = "TOOMANYREQUESTS"
+	// Not adherant to spec
+	ERR_NOT_IMPLEMENTED ServerErrCode = "NOT_IMPLEMENTED"
 )
 
-type ServerError struct {
+type Error struct {
 	Code    ServerErrCode `json:"code"`
 	Message string        `json:"message"`
 	Detail  any           `json:"detail"`
 }
 
-type MultipleServerErrors struct {
-	Errors []ServerError `json:"errors"`
+type ErrorResponse struct {
+	Errors []Error `json:"errors"`
 }
 
-// serverError formats a server error based on a known list of error codes
-// serverError should adhere to the oci distribution spec of errors and their shape
+// serverError formats a server error based on a known list of
+// error codes serverError should adhere to the oci distribution
+// spec of errors and their shape
 func serverError(
 	code ServerErrCode,
 	message string,
 	detail any,
-) ServerError {
-	return ServerError{
+) Error {
+	return Error{
 		Code:    code,
 		Message: message,
 		Detail:  detail,
 	}
 }
 
-// handleServerErrors handles multiple server errors in a oci v2 compliant fashion
-// marshals JSON in accordance with the spec or throws an unhandled exception
-func handleServerErrors(ctx fiber.Ctx, status int, errs ...ServerError) error {
-	e := MultipleServerErrors{
-		Errors: errs,
+// handleErrorResponse sends a response multiple server errors in a oci v2
+// compliant fashion. Marshaling JSON in accordance with the spec (if requester accepts JSON)
+// and sending it with a provided http status
+func handleErrorResponse(ctx fiber.Ctx, status int, errs ...Error) error {
+	if ctx.AcceptsJSON() {
+		e := ErrorResponse{Errors: errs}
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		return ctx.Status(status).Send(payload)
 	}
-	payload, err := json.Marshal(e)
-	if err != nil {
-		return err
+
+	// map errors to strings
+	// CODE::Message
+	// -- <detail>
+	errStrings := []string{}
+	for _, e := range errs {
+		errStrings = append(errStrings, fmt.Sprintf("%v::%v\n-- %v", e.Code, e.Message, e.Detail))
 	}
-	return ctx.Status(status).Send(payload)
+
+	return ctx.Status(status).Send([]byte(strings.Join(errStrings, "\n")))
+}
+
+// errEndpointNotImplemented is a catch all err func to
+// communicate that a given endpoint hasn't yet been implemented
+// this doesn't follow the spec but shows active lack-of
+// compliance in a clear fashion
+func errEndpointNotImplemented(c fiber.Ctx) error {
+	return handleErrorResponse(c, fiber.ErrNotImplemented.Code,
+		serverError(ERR_NOT_IMPLEMENTED,
+			"The given route has not been implemented yet",
+			nil,
+		),
+	)
+
 }
