@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/template/html/v3"
+	serverv2 "github.com/jbarzegar/oci/internal/servers/v2"
 )
 
 func main() {
@@ -19,6 +20,8 @@ func main() {
 			"Routes": allRoutes,
 		})
 	})
+
+	app.Use(serverv2.New())
 
 	app.Listen(":5000")
 }
