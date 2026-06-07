@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	engine := html.New("./views", ".html.tmpl")
+	engine := html.New("./views", ".gohtml")
 	config := fiber.Config{
 		Views: engine,
 	}
