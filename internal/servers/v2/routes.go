@@ -4,7 +4,7 @@ package serverv2
 // See below for full spec and methods
 // https://github.com/opencontainers/distribution-spec/blob/main/spec.md#endpoints
 const (
-	pathRoot                  = "/v2/"
+	pathRoot                  = "/v2"
 	pathBlobsDigest           = "/v2/:name/blobs/:digest"
 	pathManifestsReference    = "/v2/:name/manifests/:reference"
 	pathBlobsUploads          = "/v2/:name/blobs/uploads/"
