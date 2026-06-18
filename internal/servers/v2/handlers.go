@@ -1,8 +1,12 @@
 package serverv2
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
+	"github.com/google/uuid"
 	"github.com/jbarzegar/oci/internal/blobstorage"
 )
 
@@ -12,53 +16,175 @@ type handler struct {
 	storageClient blobstorage.Storer
 }
 
-// func handlePullManifest(c fiber.Ctx) error {
-// 	invalid := []Error{}
+func (h *handler) BlobExists(c fiber.Ctx) error {
+	digest := c.Params("digest")
+	if digest == "" {
+		return c.SendStatus(404)
+	}
+	name := c.Params("name")
+	if name == "" {
+		return c.SendStatus(404)
+	}
 
-// 	// validate each item then append any potential invalid
-// 	// params to a slice. Allows for fixing all potential issues on first pass
-// 	// rather than failing-fast each time something happens
-// 	name := c.Params("name", "")
-// 	nameValid := ociv2.ValidateManifestName(name)
-// 	if !nameValid {
-// 		invalid = append(invalid,
-// 			serverError(ERR_NAME_INVALID, "param name invalid", ""))
-// 	}
+	size, exists, err := h.storageClient.BlobInfo(c.Context(), name, digest)
+	if err != nil {
+		log.WithContext(c).Errorw("couldn't get blob info", "error", err)
+		return c.SendStatus(404)
+	}
 
-// 	ref := c.Params("reference", "")
-// 	refValid := ociv2.ValidateReference(ref)
-// 	if !refValid {
-// 		invalid = append(invalid,
-// 			serverError(ERR_MANIFEST_INVALID, "invalid manifest", ""))
-// 	}
+	if !exists {
+		return c.SendStatus(404)
+	}
+	c.Response().Header.Add("Accept-Ranges", "bytes")
+	// response.Header().Set("Content-Type", resolveBlobResponseMediaType(imgStore, name, digest, rh.c.Log))
+	// TODO: understand this ^
+	c.Response().Header.Add("Content-Type", "application/octet-stream")
+	c.Response().Header.Add("Content-Length", strconv.FormatInt(size, 10))
+	// TODO: This ->
+	// response.Header().Set(constants.DistContentDigestKey, digest.String())
 
-// 	if len(invalid) > 0 {
-// 		return handleErrorResponse(c, 401, invalid...)
-// 	}
+	return c.SendStatus(200)
+}
 
-// 	return nil
-// }
+func (h *handler) BlobRefClose(c fiber.Ctx) error {
+	queries := c.Queries()
 
-func (h *handler) BlobUploads(c fiber.Ctx) error {
-	log.WithContext(c).Info("start blob upload")
+	ref := c.Params("reference")
+	if ref == "" {
+		return c.SendStatus(fiber.StatusNotFound)
+	}
 
-	errs := []Error{}
+	name := c.Params("name")
+	if name == "" {
+		return c.SendStatus(fiber.StatusNotFound)
+	}
 
+	if digest, ok := queries["digest"]; ok {
+		log.WithContext(c).Infow("closing upload stream",
+			"name", name,
+			"reference", ref,
+			"digest", digest,
+		)
+
+		writer, err := h.storageClient.GetWriterByName(c.Context(), name)
+		if err != nil {
+			log.Error("couldn't find writer by name", "name", name)
+			return c.Status(404).Send([]byte{})
+		}
+		err = writer.Write(c.Context(), digest)
+		if err != nil {
+			log.Errorw("failed to write image", "error", err, "name", name)
+			return c.Status(400).Send([]byte(err.Error()))
+		}
+
+	} else {
+		return c.SendStatus(404)
+	}
+
+	return c.SendStatus(201)
+}
+
+func (h *handler) BlobUpload(c fiber.Ctx) error {
+	ref := c.Params("reference", "")
+	uid, err := uuid.Parse(ref)
+	if err != nil {
+		return handleErrorResponse(c, 400,
+			serverError(ERR_BLOB_UPLOAD_INVALID,
+				"could not parse Session ID", map[string]string{"reference": ref},
+			))
+	}
+	name := c.Params("name")
+
+	contentRange := 0
+	reqHeaders := c.Req().GetHeaders()
+	cr, ok := reqHeaders["Content-Range"]
+	if !ok {
+		log.WithContext(c).Warnw("No Content-Range header found, wtf do I need to do") // "headers", c.GetHeaders(),
+		// "reqHeaders", reqHeaders,
+
+	} else {
+		log.WithContext(c).Warnw("GOT CONTENT RANGE", "CONTENT-RANGE", cr)
+	}
+
+	if !c.Req().Is("application/octet-stream") {
+		return handleErrorResponse(c, 400,
+			serverError(ERR_BLOB_UPLOAD_INVALID,
+				"Request must be an octet stream", reqHeaders["Content-Type"],
+			))
+	}
+	// Fetch the writer for a given uid
+	w, err := h.storageClient.GetWriterByName(c.Context(), name)
+	if err != nil {
+		log.WithContext(c).Fatalw("failed to get writer",
+			"error", err,
+		)
+		return handleErrorResponse(c, 400,
+			serverError(ERR_BLOB_UPLOAD_UNKNOWN, "failed to get writer", err),
+		)
+	}
+	// Append the bytes from the body
+	clen, err := w.AppendPart(c.Context(), uid, c.Body())
+	if err != nil {
+		log.WithContext(c).Fatalw("failed to write part",
+			"error", err,
+		)
+		return handleErrorResponse(c, 400,
+			serverError(ERR_BLOB_UPLOAD_UNKNOWN, "failed to write part", err.Error()),
+		)
+	}
+	// generate current range
+	c.Response().Header.Add("Range", fmt.Sprintf("%v-%v", contentRange, clen))
+	return c.Status(202).Send([]byte{})
+}
+
+func (h *handler) BlobUploadLocation(c fiber.Ctx) error {
 	n := c.Params("name", "")
 	if n == "" {
-		errs = append(errs,
-			serverError(ERR_BLOB_UPLOAD_INVALID, "name param not set", ""))
+		return handleErrorResponse(c, 404,
+			serverError(ERR_BLOB_UPLOAD_INVALID, "name param not set", ""),
+		)
+	}
+
+	// Currently do not support full upload
+	if c.Query("digest", "") != "" {
+		return c.SendStatus(fiber.ErrMethodNotAllowed.Code)
+	}
+
+	contentLength := c.Request().Header.ContentLength()
+	if contentLength == 0 {
+		log.Infow("blob upload will be chunked")
+	} else if contentLength < 0 {
+		return handleErrorResponse(
+			c, 401,
+			serverError(ERR_BLOB_UPLOAD_INVALID,
+				"content-length cannot be negagtive",
+				map[string]int{"Content-Length": contentLength},
+			))
+	} else {
+		log.Infow("content length is beeg is being pushed already?",
+			"Content-Length", contentLength,
+			"Body", len(c.Body()),
+		)
 
 	}
 
-	log.Debugw("thing", "name", n)
-
-	if len(errs) > 1 {
-		return handleErrorResponse(c, 401, errs...)
+	// generate session ID (uuid)
+	uid := uuid.New()
+	// We'll create the writer however we have nothing to write
+	// as of yet this will be done when we PATCH
+	_, err := h.storageClient.CreateWriter(c.Context(), n, uid)
+	if err != nil {
+		return handleErrorResponse(
+			c, 400,
+			serverError(ERR_BLOB_UPLOAD_UNKNOWN,
+				"failed to create writer",
+				map[string]any{
+					"err": err,
+				},
+			))
 	}
 
-	return handleErrorResponse(c, 401,
-		serverError(ERR_NOT_IMPLEMENTED,
-			"uploads not implemented yet", map[string]string{"name": n},
-		))
+	c.Response().Header.Add("Location", uid.String())
+	c.Response().Header.Add("Range", "0-0")
+	return c.SendStatus(fiber.StatusAccepted)
 }

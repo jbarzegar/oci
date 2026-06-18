@@ -1,25 +1,30 @@
 package blobstorage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/codingconcepts/env"
+	"github.com/google/uuid"
+	"github.com/jbarzegar/oci/internal/manifest"
 )
 
-type S3ClientConfig struct {
+type s3ClientConfig struct {
 	Region          string `env:"RUSTFS_REGION" required:"true"`
 	AccessKeyId     string `env:"RUSTFS_ACCESS_KEY_ID" required:"true"`
 	SecretAccessKey string `env:"RUSTFS_SECRET_ACCESS_KEY" required:"true"`
 	Endpoint        string `env:"RUSTFS_ENDPOINT_URL" required:"true"`
 }
 
-func LoadConfig() (*S3ClientConfig, error) {
-	config := S3ClientConfig{}
+// loadS3ClientConfig will load the client config from the
+// S3ClientConfig struct
+func loadS3ClientConfig() (*s3ClientConfig, error) {
+	config := s3ClientConfig{}
 
 	if err := env.Set(&config); err != nil {
 		return nil, err
@@ -28,8 +33,10 @@ func LoadConfig() (*S3ClientConfig, error) {
 	return &config, nil
 }
 
-func initS3Client(cfg *S3ClientConfig) (*s3.Client, error) {
-	// build aws.Config
+// initS3Client intializes and returns a aws client that enables
+// s3 functionality from a given client config. Or returns an
+// error if the client couldn't be initialized
+func initS3Client(cfg *s3ClientConfig) (*s3.Client, error) {
 	credProvider := credentials.
 		NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretAccessKey, "")
 	creds := aws.NewCredentialsCache(credProvider)
@@ -39,6 +46,7 @@ func initS3Client(cfg *S3ClientConfig) (*s3.Client, error) {
 				URL: cfg.Endpoint,
 			}, nil
 		})
+	// build aws.Config
 	config := aws.Config{
 		Region:           cfg.Region,
 		EndpointResolver: resolver,
@@ -53,8 +61,21 @@ func initS3Client(cfg *S3ClientConfig) (*s3.Client, error) {
 	return client, nil
 }
 
+// formatKey formats a container name and diget into a directory
+// format. Joining the two strings with a slash within the object
+// store. This appears as seperate directories so an image will
+// be collected similar to /<name> -- /<name>/<digest>
+func formatKey(name string, digest string) string {
+	return fmt.Sprintf("%v/%v", name, digest)
+}
+
+type s3Storer struct {
+	bucketName string
+	client     *s3.Client
+}
+
 func NewS3Storer(bucketName string, createBucket bool) (Storer, error) {
-	cfg, err := LoadConfig()
+	cfg, err := loadS3ClientConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -76,67 +97,93 @@ func NewS3Storer(bucketName string, createBucket bool) (Storer, error) {
 	return storer, nil
 }
 
-type s3Storer struct {
-	bucketName string
-	client     *s3.Client
-}
+// -- Impl s3Storer --
 
-// formatKey formats a container name and diget into a directory
-// format. Joining the two strings with a slash within the object
-// store. This appears as seperate directories so an image will
-// be collected similar to /<name> -- /<name>/<digest>
-func formatKey(name string, digest string) string {
-	return fmt.Sprintf("%v/%v", name, digest)
-}
-
-func (s *s3Storer) GetImage(
+func (s *s3Storer) CreateWriter(
 	ctx context.Context,
-	name string, digest string,
-) (any, error) {
+	name string,
+	ref uuid.UUID,
+) (Writer, error) {
+	defer ctx.Done()
+	input := s3.CreateMultipartUploadInput{
+		Key:         &name,
+		Bucket:      &s.bucketName,
+		ContentType: aws.String("application/octet-stream"),
+	}
+	mu, err := s.client.CreateMultipartUpload(ctx, &input)
+	if err != nil {
+		return nil, err
+	}
+	w := newS3Writer(name, s.bucketName, ref, s.client, *mu.UploadId)
+	return w, nil
+}
+
+func (s *s3Storer) GetWriterByUUID(
+	ctx context.Context,
+	ref uuid.UUID,
+) (Writer, error) {
+	for _, w := range writers {
+		if slices.Contains(w.Parts(), ref) {
+			return w, nil
+		}
+	}
+
+	return nil, ErrWriterNotFound
+
+}
+
+func (s *s3Storer) GetWriterByName(
+	ctx context.Context,
+	name string,
+) (Writer, error) {
+	defer ctx.Done()
+	w, ok := writers[name]
+	if !ok {
+		return nil, ErrWriterNotFound
+	}
+
+	return w, nil
+}
+
+func (s *s3Storer) BlobInfo(
+	ctx context.Context,
+	name string,
+	digest string,
+) (int64, bool, error) {
 	key := formatKey(name, digest)
 	input := s3.GetObjectInput{
 		Bucket: &s.bucketName,
 		Key:    &key,
 	}
-	// TODO: Gotta do something with the blob idk what to do with
-	// it
-	_, err := s.client.GetObject(ctx, &input)
+	x, err := s.client.GetObject(ctx, &input)
 	if err != nil {
-		return nil, err
+		return -1, false, err
 	}
 
-	return nil, nil
+	return *x.ContentLength, true, nil
 }
 
-func (s *s3Storer) StageImage(
+func (s *s3Storer) WriteManifest(
 	ctx context.Context,
-	name string, digest string,
-) (any, error) {
-	return nil, nil
-}
-
-func (s *s3Storer) WriteImage(
-	ctx context.Context,
-	name string, digest string,
-	w io.Reader,
+	name string,
+	digest string,
+	m manifest.ManifestV2,
 ) error {
 	key := formatKey(name, digest)
-	input := s3.PutObjectInput{
-		Bucket: &s.bucketName,
-		Key:    &key,
-		Body:   w,
-	}
-	_, err := s.client.PutObject(ctx, &input)
+	b, err := manifest.MarshalV2(m)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	input := s3.PutObjectInput{
+		Bucket:      &s.bucketName,
+		Key:         &key,
+		ContentType: aws.String(m.MediaType),
+		Body:        bytes.NewReader(b),
+	}
+
+	_, err = s.client.PutObject(ctx, &input)
+	return err
 }
 
-func (s *s3Storer) HasImage(
-	ctx context.Context,
-	name string, digest string,
-) (bool, error) {
-	return false, nil
-}
+// -- end impl --

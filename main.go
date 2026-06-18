@@ -1,31 +1,29 @@
 package main
 
 import (
+	"log"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/logger"
+	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/template/html/v3"
 	serverv2 "github.com/jbarzegar/oci/internal/servers/v2"
 )
 
 func main() {
-	// client, err := blobstorage.NewS3Storer("lol", true)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// if err := client.WriteImage(
-	// 	context.Background(),
-	// 	"hello", "123",
-	// 	strings.NewReader("Hello there"),
-	// ); err != nil {
-	// 	log.Fatal(err)
-	// }
-
 	engine := html.New("./views", ".gohtml")
 	config := fiber.Config{
 		Views: engine,
 	}
 	app := fiber.New(config)
+	// Init recovery handler.
+	// enable stack traces so we can more easily debug
+	app.Use(recoverer.New(recoverer.Config{
+		Next:              nil,
+		PanicHandler:      recoverer.DefaultPanicHandler,
+		StackTraceHandler: recoverer.ConfigDefault.StackTraceHandler,
+		EnableStackTrace:  true,
+	}))
 	app.Use(logger.New())
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -36,7 +34,11 @@ func main() {
 		})
 	})
 
-	app.Use(serverv2.New())
+	s, err := serverv2.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	app.Use(s)
 
 	app.Listen(":5000")
 }
