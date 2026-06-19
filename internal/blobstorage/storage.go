@@ -37,7 +37,6 @@ var ErrWriterNotFound = errors.New("writer not found")
 type Writer interface {
 	// Name returns the repo name the Writer was registered with
 	Name() string
-	// Appends datastream to ongoing upload
 	// AppendPart adds a new upload to the parts list
 	// Returns the content length (in bytes) appened
 	AppendPart(ctx context.Context, p uuid.UUID, data []byte) (int, error)
@@ -47,4 +46,8 @@ type Writer interface {
 	Parts() []uuid.UUID
 	// UploadID returns the id of the given writers upload instance
 	UploadID() *string
+	// Flush will purge all parts of a given writer instance this
+	// should be done to cleanup after a writer does a final
+	// write to its store
+	Flush()
 }

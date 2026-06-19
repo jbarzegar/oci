@@ -88,6 +88,10 @@ func (w *S3Writer) Write(ctx context.Context, digest string) error {
 	return err
 }
 
+func (w *S3Writer) Flush() {
+	w.data = make([]byte, 0)
+}
+
 func (w *S3Writer) Name() string {
 	return w.name
 }
