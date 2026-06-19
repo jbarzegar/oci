@@ -1,6 +1,7 @@
 package serverv2
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/google/uuid"
 	"github.com/jbarzegar/oci/internal/blobstorage"
+	"github.com/jbarzegar/oci/internal/manifest"
 )
 
 // handler stores http handlers
@@ -16,6 +18,9 @@ type handler struct {
 	storageClient blobstorage.Storer
 }
 
+// BlobExists checks if a given name & digest exists in the
+// storage client and returns a subsiquent http status if found:
+// 200 not found: 404
 func (h *handler) BlobExists(c fiber.Ctx) error {
 	digest := c.Params("digest")
 	if digest == "" {
@@ -46,6 +51,8 @@ func (h *handler) BlobExists(c fiber.Ctx) error {
 	return c.SendStatus(200)
 }
 
+// BlobRefClose handles when a blob upload is closed by the client
+// this is where a blob is actually written to a storage solution
 func (h *handler) BlobRefClose(c fiber.Ctx) error {
 	queries := c.Queries()
 
@@ -67,6 +74,7 @@ func (h *handler) BlobRefClose(c fiber.Ctx) error {
 		)
 
 		writer, err := h.storageClient.GetWriterByName(c.Context(), name)
+		defer writer.Flush()
 		if err != nil {
 			log.Error("couldn't find writer by name", "name", name)
 			return c.Status(404).Send([]byte{})
@@ -84,6 +92,10 @@ func (h *handler) BlobRefClose(c fiber.Ctx) error {
 	return c.SendStatus(201)
 }
 
+// BlobUpload handles uploading a given blob/layer of an image
+// given a reference and name, BlobUpload will write that part to
+// a stream, return the content length and prepare the blob to be
+// written. The method doesn't actually write it to disk however
 func (h *handler) BlobUpload(c fiber.Ctx) error {
 	ref := c.Params("reference", "")
 	uid, err := uuid.Parse(ref)
@@ -137,6 +149,9 @@ func (h *handler) BlobUpload(c fiber.Ctx) error {
 	return c.Status(202).Send([]byte{})
 }
 
+// BlobUploadLocation is the entrypoint for a chunked blob upload.
+// It will respond with a accepted response range, and UUID of
+// where the blob must be uploaded
 func (h *handler) BlobUploadLocation(c fiber.Ctx) error {
 	n := c.Params("name", "")
 	if n == "" {
@@ -187,4 +202,36 @@ func (h *handler) BlobUploadLocation(c fiber.Ctx) error {
 	c.Response().Header.Add("Location", uid.String())
 	c.Response().Header.Add("Range", "0-0")
 	return c.SendStatus(fiber.StatusAccepted)
+}
+
+// UploadManifest
+func (h *handler) UploadManifest(c fiber.Ctx) error {
+	name := c.Params("name")
+	reference := c.Params("reference")
+	fmt.Println("tags", c.Req().OriginalURL())
+	parsedManifest, err := manifest.UnmarshalV2(c.Body())
+	if err != nil {
+		if errors.Is(err, manifest.ErrManifestInvalid) {
+			return handleErrorResponse(c,
+				400,
+				serverError(ERR_MANIFEST_INVALID, "manifest unparsable", err),
+			)
+		}
+		return err
+	}
+	err = h.storageClient.WriteManifest(
+		c.Context(),
+		name,
+		reference,
+		parsedManifest,
+	)
+	if err != nil {
+		return err
+	}
+
+	loc := fmt.Sprintf("%v/v2/%v/manifests/%v", c.BaseURL(), name, reference)
+	c.Response().Header.Add("Location", loc)
+	c.Response().Header.Add("Docker-Content-Digest", parsedManifest.Config.Digest)
+	c.Response().Header.Add("OCI-Tag", reference)
+	return c.SendStatus(201)
 }

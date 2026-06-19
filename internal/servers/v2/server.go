@@ -1,13 +1,9 @@
 package serverv2
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/codingconcepts/env"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jbarzegar/oci/internal/blobstorage"
-	"github.com/jbarzegar/oci/internal/manifest"
 )
 
 type V2ServerConfig struct {
@@ -53,36 +49,7 @@ func New() (*fiber.App, error) {
 	app.Post(pathBlobsUploads, handle.BlobUploadLocation)
 	app.Patch(pathBlobsUploadsReference, handle.BlobUpload)
 	app.Put(pathBlobsUploadsReference, handle.BlobRefClose)
-	app.Put(pathManifestsReference, func(c fiber.Ctx) error {
-		name := c.Params("name")
-		reference := c.Params("reference")
-		fmt.Println("tags", c.Req().OriginalURL())
-		parsedManifest, err := manifest.UnmarshalV2(c.Body())
-		if err != nil {
-			if errors.Is(err, manifest.ErrManifestInvalid) {
-				return handleErrorResponse(c,
-					400,
-					serverError(ERR_MANIFEST_INVALID, "manifest unparsable", err),
-				)
-			}
-			return err
-		}
-		err = storageClient.WriteManifest(
-			c.Context(),
-			name,
-			reference,
-			parsedManifest,
-		)
-		if err != nil {
-			return err
-		}
-
-		loc := fmt.Sprintf("%v/v2/%v/manifests/%v", c.BaseURL(), name, reference)
-		c.Response().Header.Add("Location", loc)
-		c.Response().Header.Add("Docker-Content-Digest", parsedManifest.Config.Digest)
-		c.Response().Header.Add("OCI-Tag", reference)
-		return c.SendStatus(201)
-	})
+	app.Put(pathManifestsReference, handle.UploadManifest)
 	app.Get(pathTagsList, errEndpointNotImplemented)
 	app.Delete(pathManifestsReference, errEndpointNotImplemented)
 	app.Delete(pathBlobsDigest, errEndpointNotImplemented)
