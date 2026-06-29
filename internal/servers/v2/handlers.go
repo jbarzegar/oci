@@ -208,7 +208,7 @@ func (h *handler) BlobUploadLocation(c fiber.Ctx) error {
 func (h *handler) UploadManifest(c fiber.Ctx) error {
 	name := c.Params("name")
 	reference := c.Params("reference")
-	fmt.Println("tags", c.Req().OriginalURL())
+
 	parsedManifest, err := manifest.UnmarshalV2(c.Body())
 	if err != nil {
 		if errors.Is(err, manifest.ErrManifestInvalid) {
@@ -219,11 +219,21 @@ func (h *handler) UploadManifest(c fiber.Ctx) error {
 		}
 		return err
 	}
+
+	contentType, ok := c.GetHeaders()["Content-Type"]
+	if !ok {
+		return handleErrorResponse(c, 400,
+			serverError(ERR_MANIFEST_INVALID, "couldn't compute content type", nil),
+		)
+	}
+
+	log.WithContext(c).Debug("idk", "name", name, "ref", reference, "Headers", c.GetHeaders())
 	err = h.storageClient.WriteManifest(
 		c.Context(),
 		name,
 		reference,
 		parsedManifest,
+		contentType[0],
 	)
 	if err != nil {
 		return err
@@ -234,4 +244,35 @@ func (h *handler) UploadManifest(c fiber.Ctx) error {
 	c.Response().Header.Add("Docker-Content-Digest", parsedManifest.Config.Digest)
 	c.Response().Header.Add("OCI-Tag", reference)
 	return c.SendStatus(201)
+}
+
+func (h *handler) ManifestExists(c fiber.Ctx) error {
+	name := c.Params("name")
+	reference := c.Params("reference")
+
+	log.WithContext(c).Debugw("params", "name", name, "ref", reference)
+	m, info, ok, err := h.storageClient.ManifestInfo(c.Context(), name, reference)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Manifest couldn't be found
+	if !ok {
+		log.WithContext(c).Warnw("manifest does not exist",
+			"name", name,
+			"reference", reference,
+		)
+		return c.SendStatus(404)
+	}
+
+	c.Response().Header.Add("Content-Length", strconv.FormatInt(*info.ContentLength, 10))
+	c.Response().Header.Add("Docker-Content-Digest", m.Config.Digest)
+	c.Response().Header.Add("Content-Type", *info.ContentType)
+
+	body, err := manifest.MarshalV2(*m)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(200).Send(body)
 }

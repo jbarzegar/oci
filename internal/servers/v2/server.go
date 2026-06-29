@@ -45,7 +45,7 @@ func New() (*fiber.App, error) {
 	})
 	app.Get(pathBlobsDigest, errEndpointNotImplemented)
 	app.Head(pathBlobsDigest, handle.BlobExists)
-	app.Get(pathManifestsReference, errEndpointNotImplemented)
+	app.Get(pathManifestsReference, handle.ManifestExists)
 	app.Post(pathBlobsUploads, handle.BlobUploadLocation)
 	app.Patch(pathBlobsUploadsReference, handle.BlobUpload)
 	app.Put(pathBlobsUploadsReference, handle.BlobRefClose)
