@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -76,7 +75,7 @@ func (w *S3Writer) AppendPart(
 func (w *S3Writer) Write(ctx context.Context, digest string) error {
 	r := bytes.NewBuffer(w.data)
 	if r.Len() == 0 {
-		return errors.New("no content to write")
+		return ErrNoWritableContent
 	}
 	key := formatKey(w.name, digest)
 	input := s3.PutObjectInput{

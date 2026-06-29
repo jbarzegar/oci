@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -163,27 +164,107 @@ func (s *s3Storer) BlobInfo(
 	return *x.ContentLength, true, nil
 }
 
+func formatManifestKey(name string, ref string) string {
+	n := fmt.Sprintf("%v/manifests", name)
+	return formatKey(n, ref)
+}
+
+type manifestPayload struct {
+	Key       string
+	MediaType string
+	Body      []byte
+}
+
+func (s *s3Storer) generateManifestInput(p manifestPayload) *s3.PutObjectInput {
+	input := s3.PutObjectInput{
+		Bucket:      &s.bucketName,
+		Key:         &p.Key,
+		ContentType: aws.String(p.MediaType),
+		Body:        bytes.NewReader(p.Body),
+	}
+
+	return &input
+}
+
 func (s *s3Storer) WriteManifest(
 	ctx context.Context,
 	name string,
-	digest string,
+	tag string,
 	m manifest.ManifestV2,
+	mediaType string,
 ) error {
-	key := formatKey(name, digest)
 	b, err := manifest.MarshalV2(m)
 	if err != nil {
 		return err
 	}
 
-	input := s3.PutObjectInput{
-		Bucket:      &s.bucketName,
-		Key:         &key,
-		ContentType: aws.String(m.MediaType),
-		Body:        bytes.NewReader(b),
+	// 	prepare manifest payload
+	payload := manifestPayload{
+		MediaType: mediaType,
+		Body:      b,
+		// Initial key is set to digest here.
+		// Later on the Key may mutate to a named reference
+		Key: formatManifestKey(name, m.Config.Digest),
 	}
 
-	_, err = s.client.PutObject(ctx, &input)
-	return err
+	// save raw digest.
+	// A named reference _may_ change since tags are implicitly
+	// mutable.
+	// While tags / references are mutable the digests should be
+	// saved independently. For preservation and or rollback, re-tags, etc
+	if _, err = s.client.PutObject(
+		ctx,
+		s.generateManifestInput(payload),
+	); err != nil {
+		return err
+	}
+
+	// save manifest based on a tag / reference
+	// FIXME(?): It would be nice to not have to save duplicate
+	// data in the future and instead have a pointer somewhere
+	// but manifests are not generally, extremely large.
+	payload.Key = formatManifestKey(name, tag)
+	if _, err = s.client.PutObject(
+		ctx,
+		s.generateManifestInput(payload),
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *s3Storer) ManifestInfo(ctx context.Context,
+	name string,
+	digest string,
+) (*manifest.ManifestV2, *StoreInfo, bool, error) {
+	key := formatManifestKey(name, digest)
+	input := s3.GetObjectInput{
+		Bucket: &s.bucketName,
+		Key:    &key,
+	}
+
+	output, err := s.client.GetObject(ctx, &input)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	buf, err := io.ReadAll(output.Body)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	m, err := manifest.UnmarshalV2(buf)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	info := StoreInfo{
+		ContentType:   output.ContentType,
+		ContentLength: output.ContentLength,
+	}
+
+	return &m, &info, true, nil
 }
 
 // -- end impl --

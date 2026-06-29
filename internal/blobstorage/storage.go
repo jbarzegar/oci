@@ -8,6 +8,11 @@ import (
 	"github.com/jbarzegar/oci/internal/manifest"
 )
 
+type StoreInfo struct {
+	ContentType   *string
+	ContentLength *int64
+}
+
 // Storer is a interface that simplifes what needs to be passed
 // to a blob storage client currently doesn't account for access
 // control
@@ -24,14 +29,24 @@ type Storer interface {
 	GetWriterByName(ctx context.Context, name string) (Writer,
 		error)
 	// BlobInfo checks if a given name & digest has been written
-	// returns size of the blob in bytes, whether it exists, and
-	// potentiall error
+	// returns size of the blob in bytes, whether it exists, or
+	// potential error. If an error is returned the preceeding
+	// values should always be there 0
 	BlobInfo(ctx context.Context, name string, digest string) (int64, bool, error)
-	// WriteManfest writes a manifest to a given location with a digest
-	WriteManifest(ctx context.Context, name string, digest string, manifest manifest.ManifestV2) error
+	// ManifestInfo checks if a given name & digest has been
+	// written returns manifest, whether it exists or a potential
+	// error. If an error is returned the preceeding
+	// values should always be there 0
+	ManifestInfo(ctx context.Context, name string, digest string) (*manifest.ManifestV2, *StoreInfo, bool, error)
+	// WriteManfest writes a manifest to a given location with a tag
+	// Additionally the digest from the manifest will be written in turn.
+	WriteManifest(ctx context.Context, name string, tag string, manifest manifest.ManifestV2, mediaType string) error
 }
 
-var ErrWriterNotFound = errors.New("writer not found")
+var (
+	ErrWriterNotFound    = errors.New("writer not found")
+	ErrNoWritableContent = errors.New("no content to write")
+)
 
 // Writer is a interface that controls how blobs are writen while handled
 type Writer interface {
