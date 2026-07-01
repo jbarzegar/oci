@@ -3,6 +3,7 @@ package serverv2
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
@@ -12,10 +13,20 @@ import (
 	"github.com/jbarzegar/oci/internal/manifest"
 )
 
+func formatContentLength(clen int64) string {
+	return strconv.FormatInt(clen, 10)
+}
+
+type manifestHandler struct {
+	Reader manifest.Reader
+	Writer manifest.Writer
+}
+
 // handler stores http handlers
 // passes dependencies to handlers from the root subapp
 type handler struct {
 	storageClient blobstorage.Storer
+	manifest      manifestHandler
 }
 
 // BlobExists checks if a given name & digest exists in the
@@ -44,7 +55,7 @@ func (h *handler) BlobExists(c fiber.Ctx) error {
 	// response.Header().Set("Content-Type", resolveBlobResponseMediaType(imgStore, name, digest, rh.c.Log))
 	// TODO: understand this ^
 	c.Response().Header.Add("Content-Type", "application/octet-stream")
-	c.Response().Header.Add("Content-Length", strconv.FormatInt(size, 10))
+	c.Response().Header.Add("Content-Length", formatContentLength(size))
 	// TODO: This ->
 	// response.Header().Set(constants.DistContentDigestKey, digest.String())
 
@@ -187,7 +198,7 @@ func (h *handler) BlobUploadLocation(c fiber.Ctx) error {
 	uid := uuid.New()
 	// We'll create the writer however we have nothing to write
 	// as of yet this will be done when we PATCH
-	_, err := h.storageClient.CreateWriter(c.Context(), n, uid)
+	_, err := h.storageClient.CreateWriter(n, uid)
 	if err != nil {
 		return handleErrorResponse(
 			c, 400,
@@ -227,13 +238,14 @@ func (h *handler) UploadManifest(c fiber.Ctx) error {
 		)
 	}
 
-	log.WithContext(c).Debug("idk", "name", name, "ref", reference, "Headers", c.GetHeaders())
-	err = h.storageClient.WriteManifest(
+	err = h.manifest.Writer.Write(
 		c.Context(),
-		name,
-		reference,
-		parsedManifest,
-		contentType[0],
+		&manifest.WriterWriteInput{
+			Name:      name,
+			Tag:       reference,
+			Manifest:  parsedManifest,
+			MediaType: contentType[0],
+		},
 	)
 	if err != nil {
 		return err
@@ -246,12 +258,27 @@ func (h *handler) UploadManifest(c fiber.Ctx) error {
 	return c.SendStatus(201)
 }
 
+func parseManifest(x io.ReadCloser) (manifest.ManifestV2, error) {
+	b, err := io.ReadAll(x)
+	if err != nil {
+		return manifest.ManifestV2{}, err
+	}
+	m, err := manifest.UnmarshalV2(b)
+	if err != nil {
+		return manifest.ManifestV2{}, err
+	}
+
+	return m, nil
+}
+
 func (h *handler) ManifestExists(c fiber.Ctx) error {
 	name := c.Params("name")
 	reference := c.Params("reference")
 
 	log.WithContext(c).Debugw("params", "name", name, "ref", reference)
-	m, info, ok, err := h.storageClient.ManifestInfo(c.Context(), name, reference)
+	result, ok, err := h.manifest.Reader.Get(c.Context(),
+		&manifest.ReaderGetInput{Name: name, Digest: reference},
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -265,14 +292,17 @@ func (h *handler) ManifestExists(c fiber.Ctx) error {
 		return c.SendStatus(404)
 	}
 
-	c.Response().Header.Add("Content-Length", strconv.FormatInt(*info.ContentLength, 10))
-	c.Response().Header.Add("Docker-Content-Digest", m.Config.Digest)
-	c.Response().Header.Add("Content-Type", *info.ContentType)
-
-	body, err := manifest.MarshalV2(*m)
+	m, err := parseManifest(result.Body)
 	if err != nil {
 		return err
 	}
 
-	return c.Status(200).Send(body)
+	c.Response().Header.Add("Docker-Content-Digest", m.Config.Digest)
+	c.Response().Header.Add("Content-Type", *result.Content.Type)
+	c.Response().Header.Add("Content-Length", formatContentLength(*result.Content.Length))
+	b, err := manifest.MarshalV2(m)
+	if err != nil {
+		return err
+	}
+	return c.Status(200).Send(b)
 }

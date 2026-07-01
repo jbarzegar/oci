@@ -16,14 +16,14 @@ import (
 var writers = map[string]Writer{}
 var writerMutex = sync.RWMutex{}
 
-// newS3Writer generates a new writer and stores it in a map if
+// NewS3Writer generates a new writer and stores it in a map if
 // the writer exists by name already. the respective writer is
 // returned instead
-func newS3Writer(
+func NewS3Writer(
 	name string,
 	bucket string,
-	ref uuid.UUID,
-	s3Client *s3.Client, uploadID string,
+	uploadID uuid.UUID,
+	s3Client *s3.Client,
 ) Writer {
 	w, ok := writers[name]
 	if !ok {
@@ -31,9 +31,8 @@ func newS3Writer(
 			writerMutex.Lock()
 			w = &S3Writer{
 				name:     name,
-				uploads:  []uuid.UUID{ref},
+				uploads:  []uuid.UUID{uploadID},
 				s3client: s3Client,
-				uploadID: uploadID,
 				bucket:   bucket,
 				data:     []byte{},
 			}
@@ -50,7 +49,6 @@ type S3Writer struct {
 	bucket   string
 	uploads  []uuid.UUID
 	s3client *s3.Client
-	uploadID string
 	data     []byte
 }
 
@@ -89,18 +87,6 @@ func (w *S3Writer) Write(ctx context.Context, digest string) error {
 
 func (w *S3Writer) Flush() {
 	w.data = make([]byte, 0)
-}
-
-func (w *S3Writer) Name() string {
-	return w.name
-}
-
-func (w *S3Writer) Parts() []uuid.UUID {
-	return w.uploads
-}
-
-func (w *S3Writer) UploadID() *string {
-	return &w.uploadID
 }
 
 // -- End Impl --
