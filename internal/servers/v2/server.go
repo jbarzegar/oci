@@ -3,7 +3,7 @@ package serverv2
 import (
 	"github.com/codingconcepts/env"
 	"github.com/gofiber/fiber/v3"
-	"github.com/jbarzegar/oci/internal/blobstorage"
+	"github.com/jbarzegar/oci/internal/storagedriver"
 )
 
 type V2ServerConfig struct {
@@ -26,18 +26,26 @@ func New() (*fiber.App, error) {
 		return nil, err
 	}
 
-	app := fiber.New()
-
-	storageClient, err := blobstorage.NewS3Storer(
-		cfg.BlobStorageBucketName, cfg.BlobStorageCreateBucket,
-	)
+	// init s3 driver and various deps
+	storageClient, manifestWriter, manifestReader, err := storagedriver.
+		InitS3Driver(
+			cfg.BlobStorageBucketName,
+			cfg.BlobStorageCreateBucket,
+		)
 	if err != nil {
 		return nil, err
 	}
 
 	// setup http handlers
-	handle := handler{storageClient: storageClient}
+	handle := handler{
+		storageClient: storageClient,
+		manifest: manifestHandler{
+			Reader: manifestReader,
+			Writer: manifestWriter,
+		},
+	}
 
+	app := fiber.New()
 	// Register all routes
 	// See routes.go
 	app.Get(pathRoot, func(c fiber.Ctx) error {
